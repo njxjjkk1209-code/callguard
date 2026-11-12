@@ -46,7 +46,7 @@ jobs:
 
   # ───────────── 主 App（产出 TrollStore 用的 .tipa）─────────────
   build-app:
-    runs-on: macos-14
+    runs-on: macos-13
     needs: [test-core]
     steps:
       - uses: actions/checkout@v4
@@ -117,7 +117,7 @@ jobs:
 
   # ───────────── Tweak（产出 .deb）─────────────
   build-tweak:
-    runs-on: macos-14
+    runs-on: macos-13
     needs: [test-core]
     steps:
       - uses: actions/checkout@v4
