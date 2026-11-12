@@ -161,6 +161,15 @@ jobs:
           fi
           command -v ldid && ldid -v 2>&1 | head -2 || echo "::error::ldid 安装失败"
 
+      # Theos 打包 deb 优先用 $THEOS/bin/dm.pl（Perl 脚本），失败时回落 dpkg-deb。
+      # macOS runner 两者都可能缺，一并装。
+      - name: Install packaging tools
+        if: always()
+        run: |
+          brew install dpkg 2>&1 | tail -3 || true
+          command -v dpkg-deb && dpkg-deb --version | head -1 || echo "无 dpkg-deb（将依赖 dm.pl）"
+          perl -e 'print "perl ok\n"'
+
       - name: Build Tweak
         id: tweak
         if: always()
@@ -177,10 +186,14 @@ jobs:
         if: always() && steps.tweak.outcome != 'success'
         run: |
           echo "===== theos 日志尾部 ====="
-          tail -50 /tmp/theos.log 2>/dev/null || echo "无日志文件"
-          echo "===== 错误行 ====="
-          grep -nE "error|Error|No such file|not found|undefined" /tmp/theos.log 2>/dev/null | head -25 | while IFS= read -r l; do
-            echo "::error title=theos::$l"
+          tail -60 /tmp/theos.log 2>/dev/null || echo "无日志文件"
+          echo "===== 打包工具 ====="
+          ls -la "$HOME/theos/bin/" 2>/dev/null || echo "无 theos/bin"
+          command -v dpkg-deb || echo "无 dpkg-deb"
+          command -v fakeroot || echo "无 fakeroot"
+          echo "===== 逐行进 annotation ====="
+          tail -60 /tmp/theos.log 2>/dev/null | sed 's/%/%25/g; s/\r//g' | while IFS= read -r l; do
+            [ -n "$l" ] && echo "::error title=theos::$l"
           done
 
       - name: Show package info
