@@ -72,6 +72,28 @@ enum SharedConfig {
         dataDirectory.appendingPathComponent("tweak_log.jsonl")
     }
 
+    /// Tweak 心跳文件：Tweak 在 SpringBoard 里加载成功后会写这个文件，
+    /// 内容是版本号 / 启动时间 / pid。
+    ///
+    /// 这是判断「Tweak 到底装没装、跑没跑」的唯一可靠依据 ——
+    /// 光看配置文件存在只能说明 App 导出成功，跟 Tweak 有没有加载是两件事。
+    static var tweakReadyURL: URL {
+        dataDirectory.appendingPathComponent("tweak_ready.json")
+    }
+
+    static var isTweakRunning: Bool {
+        FileManager.default.fileExists(atPath: tweakReadyURL.path)
+    }
+
+    static var tweakReadyInfo: [String: Any]? {
+        guard let data = try? Data(contentsOf: tweakReadyURL),
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let dict = obj as? [String: Any] else {
+            return nil
+        }
+        return dict
+    }
+
     // MARK: - 与越狱 Tweak 的共享通道
     //
     // SpringBoard 进程读不到 App 沙盒，也拿不到 App Group 容器，只能走固定路径。

@@ -12,6 +12,23 @@ struct HomeView: View {
     @State private var directoryStatus = "点击查询"
     @State private var checking = false
 
+    /// Tweak 是否已在 SpringBoard 里加载。靠 Tweak 写的心跳文件判断，
+    /// 而不是靠配置文件存在 —— 后者只能说明 App 导出成功。
+    @State private var tweakRunning = false
+    @State private var tweakDetail = "实时拦截号段 / 正则，需在 Sileo 安装 CallGuard Tweak"
+
+    private func refreshTweakState() {
+        guard let info = SharedConfig.tweakReadyInfo else {
+            tweakRunning = false
+            tweakDetail = "实时拦截号段 / 正则，需在 Sileo 安装 CallGuard Tweak"
+            return
+        }
+        tweakRunning = true
+        let version = info["version"] as? String ?? "?"
+        let rules = (info["ruleCount"] as? NSNumber)?.intValue ?? 0
+        tweakDetail = "已运行 · v\(version) · 加载 \(rules) 条规则"
+    }
+
     var body: some View {
         NavigationView {
             ScrollView {
@@ -40,8 +57,8 @@ struct HomeView: View {
 
                         StatusRow(
                             title: "L1 越狱 Tweak",
-                            detail: "实时拦截号段 / 正则，需在 Sileo 安装 CallGuard Tweak",
-                            state: .unknown
+                            detail: tweakDetail,
+                            state: tweakRunning ? .ok : .unknown
                         )
 
                         Divider().padding(.leading, 16)
@@ -86,7 +103,10 @@ struct HomeView: View {
                 .padding()
             }
             .navigationTitle("CallGuard")
-            .onAppear { store.refreshLogs() }
+            .onAppear {
+                store.refreshLogs()
+                refreshTweakState()
+            }
         }
     }
 

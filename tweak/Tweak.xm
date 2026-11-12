@@ -20,6 +20,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 #import <sys/stat.h>
+#import <unistd.h>   // getpid()
 
 #include <memory>
 #include <mutex>
@@ -124,6 +125,31 @@ static BOOL                            gEnabled     = YES;
 
 static NSMutableSet<NSString *>       *gHandled     = nil;
 static NSLock                         *gHandledLock = nil;
+
+// ─────────────────────────── 心跳 ───────────────────────────
+
+/// 写心跳文件，让 App 知道 Tweak 已经在 SpringBoard 里跑起来了。
+///
+/// 放在 App Group 容器里，App 直接读，不需要任何额外权限。
+/// 这比"配置文件存在"可靠得多 —— 配置存在只能说明 App 导出成功，
+/// 跟 Tweak 有没有被加载完全是两件事。
+static void CGWriteReadyMarker(size_t ruleCount) {
+    CGResolveDirectory();
+    if (!gLogPath) return;
+
+    NSString *dir    = [gLogPath stringByDeletingLastPathComponent];
+    NSString *marker = [dir stringByAppendingPathComponent:@"tweak_ready.json"];
+
+    NSDictionary *info = @{
+        @"version":    @"1.0.0",
+        @"startedAt":  @([[NSDate date] timeIntervalSince1970]),
+        @"pid":        @(getpid()),
+        @"ruleCount":  @(ruleCount),
+        @"configPath": gConfigPath ?: @"",
+    };
+    NSData *d = [NSJSONSerialization dataWithJSONObject:info options:0 error:NULL];
+    if (d) [d writeToFile:marker atomically:YES];
+}
 
 // ─────────────────────────── 配置加载 ───────────────────────────
 
@@ -501,6 +527,11 @@ static void CGHandleCall(id call) {
             std::lock_guard<std::mutex> lock(gEngineLock);
             if (gEngine) count = gEngine->ruleCount();
         }
+
+        // 写心跳文件：App 靠它判断 Tweak 到底装没装、加载了几条规则。
+        // 只检查配置文件存在是不够的 —— 那只说明 App 导出成功，
+        // 跟 Tweak 有没有被 SpringBoard 加载是两件事。
+        CGWriteReadyMarker(count);
 
         NSLog(@"[CallGuard] Tweak 已加载，规则 %zu 条，enabled=%d", count, gEnabled);
     }
