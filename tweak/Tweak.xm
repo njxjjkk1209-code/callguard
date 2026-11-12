@@ -29,8 +29,93 @@
 
 // ─────────────────────────── 全局状态 ───────────────────────────
 
-static NSString *const kConfigPath = @"/var/mobile/Library/CallGuard/tweak_rules.plist";
-static NSString *const kLogPath    = @"/var/mobile/Library/CallGuard/tweak_log.jsonl";
+// 候选目录必须与 SharedConfig.tweakDirectoryCandidates 顺序完全一致。
+// SpringBoard 有完整权限，%ctor 里会尝试把它们建出来——这样即使 App 因为
+// TrollStore 签名模板不带 no-sandbox 而建不了目录，这里也先建好了，
+// App 只需要写文件即可。
+static NSArray<NSString *> *CGDirectoryCandidates(void) {
+    return @[
+        @"/var/mobile/Library/CallGuard",
+        @"/var/jb/var/mobile/Library/CallGuard",
+        @"/var/mobile/Documents/CallGuard",
+    ];
+}
+
+static NSString *gConfigPath = nil;
+static NSString *gLogPath    = nil;
+
+/// 找 App Group 容器目录。
+///
+/// 这是**主通道**：App 写自己的容器是沙盒内行为，一定成功；
+/// SpringBoard 越狱后不受沙盒限制，能直接读任意容器。
+/// 所以这条路不依赖 TrollStore 是否给 App 解除了沙盒。
+///
+/// 定位方式：遍历 /var/mobile/Containers/Shared/AppGroup，
+/// 用 metadata plist 里的 MCMMetadataIdentifier 匹配 group id。
+static NSString *CGAppGroupDir(void) {
+    static NSString *cached = nil;
+    if (cached) return cached;
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *base = @"/var/mobile/Containers/Shared/AppGroup";
+    NSArray *subs = [fm contentsOfDirectoryAtPath:base error:NULL];
+    if (![subs isKindOfClass:[NSArray class]]) return nil;
+
+    for (NSString *sub in subs) {
+        NSString *dir = [base stringByAppendingPathComponent:sub];
+        NSString *meta = [dir stringByAppendingPathComponent:
+                          @".com.apple.mobile_container_manager.metadata.plist"];
+        NSDictionary *m = [NSDictionary dictionaryWithContentsOfFile:meta];
+        if (![m isKindOfClass:[NSDictionary class]]) continue;
+        if ([m[@"MCMMetadataIdentifier"] isEqualToString:@"group.com.k.callguard"]) {
+            cached = dir;
+            return cached;
+        }
+    }
+    return nil;
+}
+
+/// 确定配置/日志路径：先容器，再固定路径
+static void CGResolveDirectory(void) {
+    if (gConfigPath) return;
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    // 1. App Group 容器
+    NSString *group = CGAppGroupDir();
+    if (group) {
+        gConfigPath = [group stringByAppendingPathComponent:@"tweak_rules.plist"];
+        gLogPath    = [group stringByAppendingPathComponent:@"tweak_log.jsonl"];
+        return;
+    }
+
+    // 2. 固定路径兜底（同时负责把目录建出来）
+    for (NSString *dir in CGDirectoryCandidates()) {
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:dir isDirectory:&isDir] || !isDir) {
+            NSError *err = nil;
+            if (![fm createDirectoryAtPath:dir
+               withIntermediateDirectories:YES
+                                attributes:nil
+                                     error:&err]) {
+                continue;
+            }
+        }
+        // 探针验证：能建目录不代表能写文件（属主 root + 755 就会失败）
+        NSString *probe = [dir stringByAppendingPathComponent:@".cg_probe"];
+        if ([@"ok" writeToFile:probe atomically:YES
+                      encoding:NSUTF8StringEncoding error:NULL]) {
+            [fm removeItemAtPath:probe error:NULL];
+            gConfigPath = [dir stringByAppendingPathComponent:@"tweak_rules.plist"];
+            gLogPath    = [dir stringByAppendingPathComponent:@"tweak_log.jsonl"];
+            return;
+        }
+    }
+
+    // 一个都写不了：记下首选路径，写日志时会静默失败，但不影响拦截
+    NSString *first = CGDirectoryCandidates().firstObject;
+    gConfigPath = [first stringByAppendingPathComponent:@"tweak_rules.plist"];
+    gLogPath    = [first stringByAppendingPathComponent:@"tweak_log.jsonl"];
+}
 
 static std::unique_ptr<cg::RuleEngine> gEngine;
 static std::mutex                      gEngineLock;
@@ -43,12 +128,19 @@ static NSLock                         *gHandledLock = nil;
 // ─────────────────────────── 配置加载 ───────────────────────────
 
 static void CGLoadConfig(BOOL force) {
+    CGResolveDirectory();
     struct stat st;
-    if (stat(kConfigPath.UTF8String, &st) != 0) return;
+    if (stat(gConfigPath.UTF8String, &st) != 0) {
+        // 配置还没出现。可能是 App 后装的（容器这时才存在），
+        // 重新解析一次通道，让 Tweak 不用 respring 也能自愈。
+        gConfigPath = nil;
+        CGResolveDirectory();
+        if (stat(gConfigPath.UTF8String, &st) != 0) return;
+    }
     if (!force && st.st_mtime == gConfigMTime) return;
     gConfigMTime = st.st_mtime;
 
-    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:gConfigPath];
     if (![dict isKindOfClass:[NSDictionary class]]) return;
 
     gEnabled = [dict[@"enabled"] boolValue];
@@ -291,11 +383,13 @@ static void CGWriteLog(NSString *number, const cg::MatchResult &r) {
     [line appendBytes:"\n" length:1];
 
     NSFileManager *fm = [NSFileManager defaultManager];
-    if (![fm fileExistsAtPath:kLogPath]) {
-        [fm createFileAtPath:kLogPath contents:nil attributes:nil];
+    CGResolveDirectory();
+    if (!gLogPath) return;
+    if (![fm fileExistsAtPath:gLogPath]) {
+        [fm createFileAtPath:gLogPath contents:nil attributes:nil];
     }
 
-    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:kLogPath];
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:gLogPath];
     if (!fh) return;
 
     @try {

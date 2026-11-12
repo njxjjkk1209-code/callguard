@@ -253,11 +253,6 @@ final class RuleStore: ObservableObject {
     /// SpringBoard 进程读不到 App 沙盒，只能走这个固定路径。
     /// 需要 App 带 platform-application entitlement（TrollStore 会自动注入）。
     func exportTweakConfig() {
-        guard SharedConfig.ensureTweakDirectory() else {
-            lastReloadMessage = "无法写入共享目录，Tweak 拿不到规则"
-            return
-        }
-
         var ruleDicts: [[String: Any]] = []
         for r in rules where r.enabled {
             ruleDicts.append([
@@ -292,16 +287,33 @@ final class RuleStore: ObservableObject {
             let data = try PropertyListSerialization.data(
                 fromPropertyList: dict, format: .xml, options: 0
             )
-            try data.write(to: SharedConfig.tweakConfigURL, options: .atomic)
+
+            // 主通道：App Group 容器。App 写自己的容器是沙盒内行为，必然成功；
+            // SpringBoard 越狱后能直接读，不依赖 TrollStore 给不给 no-sandbox。
+            try data.write(to: SharedConfig.tweakConfigInContainerURL, options: .atomic)
+
+            // 备通道：/var/mobile/Library 等固定路径。写得进去就多一份，
+            // Tweak 优先读容器，读不到再退到这里。
+            if SharedConfig.isTweakChannelReachable {
+                try? data.write(to: SharedConfig.tweakConfigURL, options: .atomic)
+            }
         } catch {
             lastReloadMessage = "Tweak 配置写入失败：\(error.localizedDescription)"
         }
     }
 
-    /// 把 Tweak 写的 JSONL 日志导入数据库，然后清空文件
+    /// 把 Tweak 写的 JSONL 日志导入数据库，然后清空文件。
+    /// Tweak 优先写 App Group 容器（SpringBoard 有权限），
+    /// 读不到再退到固定路径。
     func importTweakLogs() {
-        let url = SharedConfig.tweakLogURL
-        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return }
+        let candidates = [
+            SharedConfig.tweakLogInContainerURL,
+            SharedConfig.tweakLogURL,
+        ]
+        guard let url = candidates.first(where: {
+            FileManager.default.fileExists(atPath: $0.path)
+        }),
+        let data = try? Data(contentsOf: url), !data.isEmpty else { return }
 
         var imported = 0
         for line in data.split(separator: 0x0A) {

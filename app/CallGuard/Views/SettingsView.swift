@@ -17,6 +17,32 @@ struct SettingsView: View {
     @State private var exportDocument: RulesDocument?
     @State private var showingExporter = false
 
+    /// Tweak 通道状态。
+    /// 主通道是 App Group 容器（App 一定写得进，SpringBoard 一定读得到），
+    /// 固定路径是备通道。区分两者才能判断到底哪一环出了问题。
+    private var tweakChannelStatus: String {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: SharedConfig.tweakConfigInContainerURL.path) {
+            return "已导出（容器）"
+        }
+        if fm.fileExists(atPath: SharedConfig.tweakConfigURL.path) {
+            return "已导出（固定路径）"
+        }
+        return "未导出"
+    }
+
+    /// 实际生效的通道位置，给排障用
+    private var tweakChannelPath: String {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: SharedConfig.tweakConfigInContainerURL.path) {
+            return "App Group 容器"
+        }
+        if fm.fileExists(atPath: SharedConfig.tweakConfigURL.path) {
+            return SharedConfig.tweakDirectory.path
+        }
+        return "—"
+    }
+
     var body: some View {
         NavigationView {
             List {
@@ -111,15 +137,21 @@ struct SettingsView: View {
                 Section("运行状态") {
                     InfoRow(title: "共享容器",
                             value: SharedConfig.isAppGroupAvailable ? "App Group" : "本地目录")
-                    InfoRow(title: "Tweak 通道",
-                            value: FileManager.default.fileExists(
-                                atPath: SharedConfig.tweakConfigURL.path) ? "已导出" : "未导出")
+                    InfoRow(title: "Tweak 通道", value: tweakChannelStatus)
+                    InfoRow(title: "通道路径", value: tweakChannelPath)
                     InfoRow(title: "规则数", value: "\(store.rules.count)")
                     InfoRow(title: "生效规则", value: "\(store.engineRuleCount)")
+                } footer: {
+                    if tweakChannelStatus == "未导出" {
+                        Text(SharedConfig.tweakChannelDiagnostics)
+                    }
                 }
 
                 Section("操作") {
                     Button("重建引擎并刷新来电识别") {
+                        // 先清缓存重新探测：先装 App 后装 Tweak 时，
+                        // 目录可能是 Tweak 装好后才建出来的。
+                        SharedConfig.resetTweakChannelCache()
                         store.rebuildEngine()
                         store.syncExports()
                         store.scheduleDirectoryReload()
