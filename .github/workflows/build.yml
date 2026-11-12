@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 失败时把构建日志推回 ci-logs 分支，便于在仓库外直接读取
+permissions:
+  contents: write
+
 jobs:
   # ───────────── 规则引擎算法验证（秒级反馈，先挂再说）─────────────
   test-python:
@@ -162,12 +166,24 @@ jobs:
           command -v ldid && ldid -v 2>&1 | head -2 || echo "::error::ldid 安装失败"
 
       # Theos 打包 deb 优先用 $THEOS/bin/dm.pl（Perl 脚本），失败时回落 dpkg-deb。
-      # macOS runner 两者都可能缺，一并装。
+      # macOS 自带的 perl 缺 Compress::Raw::Zlib 等模块，dm.pl 存在但跑不起来时
+      # Theos 不会自动回落，会直接 internal-package Error 2。所以先验证再决定。
       - name: Install packaging tools
         if: always()
         run: |
           brew install dpkg 2>&1 | tail -3 || true
-          command -v dpkg-deb && dpkg-deb --version | head -1 || echo "无 dpkg-deb（将依赖 dm.pl）"
+          command -v dpkg-deb && dpkg-deb --version | head -1 || echo "无 dpkg-deb"
+          echo "=== 测试 dm.pl ==="
+          if [ -f "$HOME/theos/bin/dm.pl" ]; then
+            if perl "$HOME/theos/bin/dm.pl" --help >/dev/null 2>&1; then
+              echo "dm.pl 可用"
+            else
+              echo "dm.pl 不可用，移除以强制回落到 dpkg-deb"
+              mv "$HOME/theos/bin/dm.pl" "$HOME/theos/bin/dm.pl.disabled"
+            fi
+          else
+            echo "dm.pl 不存在，将使用 dpkg-deb"
+          fi
           perl -e 'print "perl ok\n"'
 
       - name: Build Tweak
@@ -242,3 +258,19 @@ jobs:
             echo "::error::构建未全部成功，见上方诊断步骤"
             exit 1
           fi
+
+      # 把日志推回 ci-logs 分支。artifact 下载需要登录，这条路不需要。
+      - name: 回传构建日志
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p .ci-logs
+          cp /tmp/theos.log .ci-logs/theos.log 2>/dev/null || echo "无 theos.log" > .ci-logs/theos.log
+          cp /tmp/xcodebuild.log .ci-logs/xcodebuild.log 2>/dev/null || echo "无 xcodebuild.log" > .ci-logs/xcodebuild.log
+          ls -la .ci-logs
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@localhost"
+          git checkout -b ci-logs 2>/dev/null || git checkout ci-logs
+          git add -f .ci-logs
+          git commit -m "ci: 构建日志 [skip ci]" || echo "无变化"
+          git push -f origin ci-logs || echo "推送日志失败"
