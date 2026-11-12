@@ -29,15 +29,16 @@ jobs:
       - name: 规则自动升级阈值
         run: python tools/verify_promotion.py
 
-  # C++ 核心库真实编译 + 单元测试
+  # C++ 核心库编译 + 单元测试
+  # 用 ubuntu 而不是 macOS：标准 C++17，g++ 完全够用，还省 macOS 额度
   test-core:
-    runs-on: macos-14
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Compile
         run: |
-          clang++ -std=c++17 -O2 -Wall -Wextra \
+          g++ -std=c++17 -O2 -Wall -Wextra \
             tests/test_core.cpp -o /tmp/test_core
 
       - name: Run tests
