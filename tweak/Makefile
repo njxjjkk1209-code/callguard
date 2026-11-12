@@ -18,9 +18,12 @@ CGBUILD_COMMIT ?= dev
 CGBUILD_TIME ?= unknown
 
 CallGuardTweak_FILES = Tweak.xm
+# 注意：字符串宏必须写成 \"value\"，不能套单引号 ——
+# 写成 '\"value\"' 会让 clang 收到 '"value"'，直接报
+# "missing terminating '\"' character" 并连带整个模块构建失败。
 CallGuardTweak_CFLAGS = -fobjc-arc -std=c++17 -I$(THEOS_PROJECT_DIR)/../core \
-	-DCGBUILD_COMMIT='\"$(CGBUILD_COMMIT)\"' \
-	-DCGBUILD_TIME='\"$(CGBUILD_TIME)\"'
+	-DCGBUILD_COMMIT=\"$(CGBUILD_COMMIT)\" \
+	-DCGBUILD_TIME=\"$(CGBUILD_TIME)\"
 CallGuardTweak_FRAMEWORKS = UIKit Foundation AVFoundation
 CallGuardTweak_LIBRARIES = substrate
 
