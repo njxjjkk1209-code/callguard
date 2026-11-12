@@ -134,13 +134,17 @@ struct SettingsView: View {
 
                 // MARK: 运行状态
 
-                Section("运行状态") {
+                // 注意：不能用 Section("标题") { } footer: { } —— 那个重载是
+                // iOS 16 才有的，本项目最低 15.0，必须写成 content/header/footer 形式。
+                Section {
                     InfoRow(title: "共享容器",
                             value: SharedConfig.isAppGroupAvailable ? "App Group" : "本地目录")
                     InfoRow(title: "Tweak 通道", value: tweakChannelStatus)
                     InfoRow(title: "通道路径", value: tweakChannelPath)
                     InfoRow(title: "规则数", value: "\(store.rules.count)")
                     InfoRow(title: "生效规则", value: "\(store.engineRuleCount)")
+                } header: {
+                    Text("运行状态")
                 } footer: {
                     if tweakChannelStatus == "未导出" {
                         Text(SharedConfig.tweakChannelDiagnostics)
