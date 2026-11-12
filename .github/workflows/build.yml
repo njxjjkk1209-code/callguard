@@ -146,6 +146,21 @@ jobs:
           cp -R /tmp/sdks/iPhoneOS*.sdk "$HOME/theos/sdks/" || true
           ls "$HOME/theos/sdks"
 
+      # Theos 编译完 .dylib 后要用 ldid 签名，但 $THEOS/bin 里的 ldid 是
+      # submodule 二进制，--depth 1 克隆时经常缺失，表现为 "ldid: command not found"。
+      # 显式装一份，并检查 Theos 自带的那份是否存在。
+      - name: Install ldid
+        if: always()
+        run: |
+          echo "=== Theos 自带 bin ==="
+          ls -la "$HOME/theos/bin/" 2>/dev/null || echo "bin 目录不存在"
+          echo "=== 系统 ldid ==="
+          which ldid || echo "PATH 里没有 ldid"
+          if ! command -v ldid >/dev/null 2>&1; then
+            brew install ldid 2>&1 | tail -5 || true
+          fi
+          command -v ldid && ldid -v 2>&1 | head -2 || echo "::error::ldid 安装失败"
+
       - name: Build Tweak
         id: tweak
         if: always()
