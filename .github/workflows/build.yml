@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # 规则引擎算法验证（秒级反馈，先挂再说）
+  # ───────────── 规则引擎算法验证（秒级反馈，先挂再说）─────────────
   test-python:
     runs-on: ubuntu-latest
     steps:
@@ -29,7 +29,7 @@ jobs:
       - name: 规则自动升级阈值
         run: python tools/verify_promotion.py
 
-  # C++ 核心库编译 + 单元测试
+  # ───────────── C++ 核心库编译 + 单元测试 ─────────────
   # 用 ubuntu 而不是 macOS：标准 C++17，g++ 完全够用，还省 macOS 额度
   test-core:
     runs-on: ubuntu-latest
@@ -44,13 +44,28 @@ jobs:
       - name: Run tests
         run: /tmp/test_core
 
-  # ───────────── 主 App（产出 TrollStore 用的 .tipa）─────────────
-  build-app:
-    runs-on: macos-13
+  # ───────────── iOS 产物：App(.tipa) + Tweak(.deb) ─────────────
+  # 合并成一个 job 的原因：macOS runner 每次分配都要排队，
+  # 拆成两个 job 等于排两次队。串行编译只排一次。
+  # 用 macos-15 的原因：macos-13 已于 2025-12 退役，标签仍在但无容量，
+  # 表现为永远 queued、runner 未分配。
+  build-ios:
+    runs-on: macos-15
     needs: [test-core]
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
+      - name: 环境探测
+        run: |
+          echo "=== runner ==="
+          uname -m
+          sw_vers
+          echo "=== xcode ==="
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      # ── App ──────────────────────────────────────────
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -58,7 +73,9 @@ jobs:
         working-directory: app
         run: xcodegen generate
 
-      - name: Build
+      - name: Build App
+        id: app
+        continue-on-error: true
         working-directory: app
         run: |
           set -o pipefail
@@ -71,14 +88,15 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build 2>&1 | tee /tmp/xcodebuild.log | tail -60
+            build 2>&1 | tee /tmp/xcodebuild.log | tail -80
 
       - name: Package .tipa
+        if: steps.app.outcome == 'success'
         run: |
           set -e
           APP=$(find app/build -type d -name "CallGuard.app" -path "*Release-iphoneos*" | head -1)
           if [ -z "$APP" ]; then
-            echo "找不到 CallGuard.app，构建可能失败"
+            echo "找不到 CallGuard.app"
             exit 1
           fi
           echo "找到 $APP"
@@ -87,7 +105,7 @@ jobs:
           mkdir -p Payload
           cp -R "$APP" Payload/
 
-          # 先签 extension，再签主 App。TrollStore 安装时会保留这里的 entitlements
+          # 先签 extension 再签主 App。TrollStore 安装时保留这里的 entitlements
           codesign --force --sign - \
             --entitlements app/CallGuardDirectory/CallGuardDirectory.entitlements \
             Payload/CallGuard.app/PlugIns/CallGuardDirectory.appex || true
@@ -100,29 +118,10 @@ jobs:
           zip -qry CallGuard.tipa Payload
           ls -lh CallGuard.tipa
 
-      - name: Upload .tipa
-        uses: actions/upload-artifact@v4
-        with:
-          name: callguard-app
-          path: CallGuard.tipa
-          if-no-files-found: error
-
-      - name: Upload build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: xcodebuild-log
-          path: /tmp/xcodebuild.log
-          if-no-files-found: ignore
-
-  # ───────────── Tweak（产出 .deb）─────────────
-  build-tweak:
-    runs-on: macos-13
-    needs: [test-core]
-    steps:
-      - uses: actions/checkout@v4
-
+      # ── Tweak ────────────────────────────────────────
+      # App 编挂了也继续编 Tweak，一次拿到两边的错误，避免反复排队
       - name: Install Theos
+        if: always()
         run: |
           export THEOS=$HOME/theos
           git clone --recursive --depth 1 https://github.com/theos/theos.git $THEOS
@@ -130,21 +129,27 @@ jobs:
           echo "$THEOS/bin" >> $GITHUB_PATH
 
       - name: Install SDKs
+        if: always()
         run: |
           git clone --depth 1 https://github.com/theos/sdks.git /tmp/sdks
-          mkdir -p "$THEOS/sdks"
-          cp -R /tmp/sdks/iPhoneOS*.sdk "$THEOS/sdks/" || true
-          ls "$THEOS/sdks"
+          mkdir -p "$HOME/theos/sdks"
+          cp -R /tmp/sdks/iPhoneOS*.sdk "$HOME/theos/sdks/" || true
+          ls "$HOME/theos/sdks"
 
-      - name: Build package
+      - name: Build Tweak
+        id: tweak
+        if: always()
+        continue-on-error: true
         working-directory: tweak
         run: |
           set -o pipefail
           make clean package \
+            THEOS=$HOME/theos \
             THEOS_PACKAGE_SCHEME=rootless \
-            FINALPACKAGE=1 2>&1 | tee /tmp/theos.log | tail -60
+            FINALPACKAGE=1 2>&1 | tee /tmp/theos.log | tail -80
 
       - name: Show package info
+        if: always()
         run: |
           ls -la tweak/packages/ || true
           for f in tweak/packages/*.deb; do
@@ -152,17 +157,39 @@ jobs:
             dpkg-deb -I "$f" 2>/dev/null || true
           done
 
+      # ── 产物 ─────────────────────────────────────────
+      - name: Upload .tipa
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: callguard-app
+          path: CallGuard.tipa
+          if-no-files-found: warn
+
       - name: Upload .deb
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: callguard-tweak
           path: tweak/packages/*.deb
-          if-no-files-found: error
+          if-no-files-found: warn
 
-      - name: Upload build log on failure
-        if: failure()
+      - name: Upload logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: theos-log
-          path: /tmp/theos.log
+          name: build-logs
+          path: |
+            /tmp/xcodebuild.log
+            /tmp/theos.log
           if-no-files-found: ignore
+
+      - name: 汇总结果
+        if: always()
+        run: |
+          echo "App   : ${{ steps.app.outcome }}"
+          echo "Tweak : ${{ steps.tweak.outcome }}"
+          if [ "${{ steps.app.outcome }}" != "success" ] || [ "${{ steps.tweak.outcome }}" != "success" ]; then
+            echo "::error::构建未全部成功，请下载 build-logs 查看原因"
+            exit 1
+          fi
