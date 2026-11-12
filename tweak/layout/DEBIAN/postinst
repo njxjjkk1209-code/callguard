@@ -1,0 +1,4 @@
+#!/bin/sh
+# 安装后重启 SpringBoard 让 Tweak 生效
+killall -9 SpringBoard 2>/dev/null || true
+exit 0

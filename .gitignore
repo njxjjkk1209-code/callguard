@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# XcodeGen 生成的工程文件（由 project.yml 生成，不入库）
+app/CallGuard.xcodeproj/
+app/CallGuard.xcworkspace/
+
+# 构建产物
+*.tipa
+*.ipa
+*.deb
+Payload/
+app/build/
+
+# Theos
+tweak/.theos/
+tweak/packages/
+tweak/.makefiles/
+
+# Python
+__pycache__/
+*.pyc

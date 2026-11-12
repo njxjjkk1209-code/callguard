@@ -1,0 +1,7 @@
+# 统一用 LF，避免 Windows 检出后 Swift/Shell 脚本在 macOS runner 上出问题
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.deb binary
+*.tipa binary

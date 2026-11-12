@@ -1,0 +1,9 @@
+Package: com.k.callguard.tweak
+Name: CallGuard Tweak
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: 骚扰电话实时拦截 —— Hook 来电界面，号段 / 正则规则在这里生效
+Maintainer: K
+Author: K
+Section: Tweaks
+Depends: firmware (>= 15.0), ellekit | mobilesubstrate

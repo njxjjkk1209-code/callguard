@@ -1,0 +1,74 @@
+name: CallGuard
+
+options:
+  bundleIdPrefix: com.k
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+    # TrollStore 用 ldid 重签，构建阶段不做签名
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    ENABLE_BITCODE: "NO"
+    ONLY_ACTIVE_ARCH: "NO"
+    TARGETED_DEVICE_FAMILY: "1"
+    CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+    CLANG_CXX_LIBRARY: "libc++"
+
+targets:
+
+  # ───────────── 主 App ─────────────
+
+  CallGuard:
+    type: application
+    platform: iOS
+    sources:
+      - path: CallGuard
+        excludes:
+          - "Info.plist"
+          - "CallGuard.entitlements"
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.k.callguard
+        PRODUCT_NAME: CallGuard
+        INFOPLIST_FILE: CallGuard/Info.plist
+        CODE_SIGN_ENTITLEMENTS: CallGuard/CallGuard.entitlements
+        SWIFT_OBJC_BRIDGING_HEADER: Shared/CallGuard-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/../core"
+        ARCHS: "arm64 arm64e"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies:
+      - target: CallGuardDirectory
+        embed: true
+      - sdk: libsqlite3.tbd
+      - sdk: CallKit.framework
+
+  # ───────────── CallDirectory Extension ─────────────
+
+  CallGuardDirectory:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: CallGuardDirectory
+        excludes:
+          - "Info.plist"
+          - "CallGuardDirectory.entitlements"
+      - path: Shared/SharedConfig.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.k.callguard.directory
+        PRODUCT_NAME: CallGuardDirectory
+        INFOPLIST_FILE: CallGuardDirectory/Info.plist
+        CODE_SIGN_ENTITLEMENTS: CallGuardDirectory/CallGuardDirectory.entitlements
+        ARCHS: "arm64 arm64e"
+        SKIP_INSTALL: "YES"
+    dependencies:
+      - sdk: CallKit.framework

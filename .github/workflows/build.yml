@@ -1,0 +1,167 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # 规则引擎算法验证（秒级反馈，先挂再说）
+  test-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 算法用例
+        run: python tests/run_tests.py
+
+      - name: 种子规则行为
+        run: python tools/simulate.py
+
+      - name: App ↔ Tweak 配置格式一致性
+        run: python tools/verify_tweak_config.py
+
+      - name: 规则自动升级阈值
+        run: python tools/verify_promotion.py
+
+  # C++ 核心库真实编译 + 单元测试
+  test-core:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile
+        run: |
+          clang++ -std=c++17 -O2 -Wall -Wextra \
+            tests/test_core.cpp -o /tmp/test_core
+
+      - name: Run tests
+        run: /tmp/test_core
+
+  # ───────────── 主 App（产出 TrollStore 用的 .tipa）─────────────
+  build-app:
+    runs-on: macos-14
+    needs: [test-core]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: app
+        run: xcodegen generate
+
+      - name: Build
+        working-directory: app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project CallGuard.xcodeproj \
+            -scheme CallGuard \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee /tmp/xcodebuild.log | tail -60
+
+      - name: Package .tipa
+        run: |
+          set -e
+          APP=$(find app/build -type d -name "CallGuard.app" -path "*Release-iphoneos*" | head -1)
+          if [ -z "$APP" ]; then
+            echo "找不到 CallGuard.app，构建可能失败"
+            exit 1
+          fi
+          echo "找到 $APP"
+
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+
+          # 先签 extension，再签主 App。TrollStore 安装时会保留这里的 entitlements
+          codesign --force --sign - \
+            --entitlements app/CallGuardDirectory/CallGuardDirectory.entitlements \
+            Payload/CallGuard.app/PlugIns/CallGuardDirectory.appex || true
+          codesign --force --sign - \
+            --entitlements app/CallGuard/CallGuard.entitlements \
+            Payload/CallGuard.app || true
+
+          codesign -d --entitlements - Payload/CallGuard.app 2>&1 || true
+
+          zip -qry CallGuard.tipa Payload
+          ls -lh CallGuard.tipa
+
+      - name: Upload .tipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: callguard-app
+          path: CallGuard.tipa
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: /tmp/xcodebuild.log
+          if-no-files-found: ignore
+
+  # ───────────── Tweak（产出 .deb）─────────────
+  build-tweak:
+    runs-on: macos-14
+    needs: [test-core]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Theos
+        run: |
+          export THEOS=$HOME/theos
+          git clone --recursive --depth 1 https://github.com/theos/theos.git $THEOS
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
+          echo "$THEOS/bin" >> $GITHUB_PATH
+
+      - name: Install SDKs
+        run: |
+          git clone --depth 1 https://github.com/theos/sdks.git /tmp/sdks
+          mkdir -p "$THEOS/sdks"
+          cp -R /tmp/sdks/iPhoneOS*.sdk "$THEOS/sdks/" || true
+          ls "$THEOS/sdks"
+
+      - name: Build package
+        working-directory: tweak
+        run: |
+          set -o pipefail
+          make clean package \
+            THEOS_PACKAGE_SCHEME=rootless \
+            FINALPACKAGE=1 2>&1 | tee /tmp/theos.log | tail -60
+
+      - name: Show package info
+        run: |
+          ls -la tweak/packages/ || true
+          for f in tweak/packages/*.deb; do
+            echo "== $f =="
+            dpkg-deb -I "$f" 2>/dev/null || true
+          done
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: callguard-tweak
+          path: tweak/packages/*.deb
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: theos-log
+          path: /tmp/theos.log
+          if-no-files-found: ignore

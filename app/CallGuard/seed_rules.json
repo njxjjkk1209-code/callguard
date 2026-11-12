@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "updated": "2026-11-12",
+  "note": "种子规则库。默认全部为 mark（仅标记不拦截），先跑观察期，确认误拦率后再升级为 block。",
+  "rules": [
+    {
+      "id": 1001,
+      "type": "prefix",
+      "value": "170",
+      "action": "mark",
+      "label": "虚拟运营商 170"
+    },
+    {
+      "id": 1002,
+      "type": "prefix",
+      "value": "171",
+      "action": "mark",
+      "label": "虚拟运营商 171"
+    },
+    {
+      "id": 1003,
+      "type": "prefix",
+      "value": "162",
+      "action": "mark",
+      "label": "虚拟运营商 162"
+    },
+    {
+      "id": 1004,
+      "type": "prefix",
+      "value": "165",
+      "action": "mark",
+      "label": "虚拟运营商 165"
+    },
+    {
+      "id": 1005,
+      "type": "prefix",
+      "value": "167",
+      "action": "mark",
+      "label": "虚拟运营商 167"
+    },
+    {
+      "id": 1010,
+      "type": "prefix",
+      "value": "95",
+      "action": "mark",
+      "label": "95 企业外呼"
+    },
+    {
+      "id": 1011,
+      "type": "prefix",
+      "value": "400",
+      "action": "mark",
+      "label": "400 企业热线"
+    },
+    {
+      "id": 1012,
+      "type": "prefix",
+      "value": "1010",
+      "action": "mark",
+      "label": "1010 企业外呼"
+    }
+  ],
+  "whitelist_templates": [
+    {
+      "id": 2001,
+      "type": "prefix",
+      "value": "955",
+      "label": "955xx 银行客服"
+    },
+    {
+      "id": 2002,
+      "type": "prefix",
+      "value": "953",
+      "label": "953xx 运营商客服"
+    },
+    {
+      "id": 2003,
+      "type": "prefix",
+      "value": "10086",
+      "label": "中国移动"
+    },
+    {
+      "id": 2004,
+      "type": "prefix",
+      "value": "10010",
+      "label": "中国联通"
+    },
+    {
+      "id": 2005,
+      "type": "prefix",
+      "value": "10000",
+      "label": "中国电信"
+    }
+  ]
+}
