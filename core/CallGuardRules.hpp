@@ -240,14 +240,17 @@ public:
         if (pid >= 0) return makeResult(pid, "prefix");
 
         // 4. 号码区间
-        if (!ranges_.empty()) {
-            auto it = std::upper_bound(
-                ranges_.begin(), ranges_.end(), v,
-                [](uint64_t val, const RangeEntry& r) { return val < r.start; });
-            if (it != ranges_.begin()) {
-                --it;
-                if (v >= it->start && v <= it->end) return makeResult(it->ruleIdx, "range");
-            }
+        //
+        // 这里故意用线性扫描，不用 upper_bound + 单次回退。
+        // 原因：upper_bound 找到第一个 start > v 的区间后只回退一格，
+        // 一旦两条区间重叠（17000000000-17999999999 与 17050000000-17050000999），
+        // 命中落在被遮挡的那条上就判定失败，而且**完全静默**——
+        // 表现为"规则明明加了却从来不命中"，排查成本极高。
+        //
+        // 区间规则是手工填的，数量在几十条量级；来电是低频事件，
+        // 线性扫描的成本可以忽略，换来的是任何重叠组合都不会漏。
+        for (const auto& r : ranges_) {
+            if (v >= r.start && v <= r.end) return makeResult(r.ruleIdx, "range");
         }
 
         // 5. 正则（最后兜底，数量受控）
