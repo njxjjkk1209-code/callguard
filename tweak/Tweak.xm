@@ -373,7 +373,10 @@ static void CGHandleCall(id call) {
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
     id call = nil;
-    @try { call = [self valueForKey:@"call"]; } @catch (NSException *e) {}
+    // Logos 对这个类只生成 @class 前向声明，直接 [self valueForKey:] 会报
+    // "receiver type ... is a forward declaration"。转成 id 后任何消息都能发。
+    id selfObj = (id)self;
+    @try { call = [selfObj valueForKey:@"call"]; } @catch (NSException *e) {}
     CGHandleCall(call);
 }
 

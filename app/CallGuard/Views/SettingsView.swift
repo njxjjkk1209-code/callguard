@@ -212,27 +212,27 @@ private struct GuideView: View {
 
                     GuideSection(
                         title: "第一步：开启来电识别",
-                        body: "设置 → 电话 → 来电阻止与身份识别 → 打开 CallGuard。不开启的话，精确黑名单不会生效。"
+                        text: "设置 → 电话 → 来电阻止与身份识别 → 打开 CallGuard。不开启的话，精确黑名单不会生效。"
                     )
 
                     GuideSection(
                         title: "第二步：先跑观察期",
-                        body: "种子规则默认是「仅标记」，来电会显示标签但不拦截。跑一周后到「记录」页看误拦情况，再把确认的号段改成「拦截」。"
+                        text: "种子规则默认是「仅标记」，来电会显示标签但不拦截。跑一周后到「记录」页看误拦情况，再把确认的号段改成「拦截」。"
                     )
 
                     GuideSection(
                         title: "第三步：装 Tweak 补号段",
-                        body: "CallDirectory 不支持号段匹配，170/171 这类整段拦截必须靠越狱 Tweak。Tweak 装好后，号段规则才真正生效。"
+                        text: "CallDirectory 不支持号段匹配，170/171 这类整段拦截必须靠越狱 Tweak。Tweak 装好后，号段规则才真正生效。"
                     )
 
                     GuideSection(
                         title: "关于误拦",
-                        body: "在「记录」页长按任意一条，可以直接加入白名单或确认拉黑。白名单优先级最高，会压过所有拦截规则。"
+                        text: "在「记录」页长按任意一条，可以直接加入白名单或确认拉黑。白名单优先级最高，会压过所有拦截规则。"
                     )
 
                     GuideSection(
                         title: "关于自动升级",
-                        body: "规则跑满 7 天、命中 3 次以上，就可以在设置页一键升级成拦截。这个阈值可以按自己的误拦容忍度调整。"
+                        text: "规则跑满 7 天、命中 3 次以上，就可以在设置页一键升级成拦截。这个阈值可以按自己的误拦容忍度调整。"
                     )
                 }
                 .padding()
@@ -250,13 +250,15 @@ private struct GuideView: View {
 
 private struct GuideSection: View {
     let title: String
-    let body: String
+    // 不能叫 body：会和 View 协议的 `var body` 重名，编译期直接报
+    // invalid redeclaration of 'body'
+    let text: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(.headline)
-            Text(self.body)
+            Text(text)
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
