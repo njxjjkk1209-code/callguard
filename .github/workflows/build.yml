@@ -165,25 +165,14 @@ jobs:
           fi
           command -v ldid && ldid -v 2>&1 | head -2 || echo "::error::ldid 安装失败"
 
-      # Theos 打包 deb 优先用 $THEOS/bin/dm.pl（Perl 脚本），失败时回落 dpkg-deb。
-      # macOS 自带的 perl 缺 Compress::Raw::Zlib 等模块，dm.pl 存在但跑不起来时
-      # Theos 不会自动回落，会直接 internal-package Error 2。所以先验证再决定。
+      # Theos 的 `make package` 硬性要求 $THEOS/bin/dm.pl（内部会报
+      # "requires dm.pl"），不回落 dpkg-deb。macOS 自带 perl 常缺 dm.pl 依赖的
+      # 压缩模块，折腾它不如自己打包 —— deb 就是 control + 文件树，dpkg-deb 足够。
       - name: Install packaging tools
         if: always()
         run: |
           brew install dpkg 2>&1 | tail -3 || true
-          command -v dpkg-deb && dpkg-deb --version | head -1 || echo "无 dpkg-deb"
-          echo "=== 测试 dm.pl ==="
-          if [ -f "$HOME/theos/bin/dm.pl" ]; then
-            if perl "$HOME/theos/bin/dm.pl" --help >/dev/null 2>&1; then
-              echo "dm.pl 可用"
-            else
-              echo "dm.pl 不可用，移除以强制回落到 dpkg-deb"
-              mv "$HOME/theos/bin/dm.pl" "$HOME/theos/bin/dm.pl.disabled"
-            fi
-          else
-            echo "dm.pl 不存在，将使用 dpkg-deb"
-          fi
+          command -v dpkg-deb && dpkg-deb --version | head -1 || echo "::error::dpkg-deb 不可用"
           perl -e 'print "perl ok\n"'
 
       - name: Build Tweak
@@ -193,10 +182,46 @@ jobs:
         working-directory: tweak
         run: |
           set -o pipefail
-          make clean package \
+          # 只编 all，不跑 package（package 依赖 dm.pl，见上一步注释）
+          make clean all \
             THEOS=$HOME/theos \
             THEOS_PACKAGE_SCHEME=rootless \
             FINALPACKAGE=1 2>&1 | tee /tmp/theos.log | tail -80
+
+      - name: Package .deb
+        if: always() && steps.tweak.outcome == 'success'
+        run: |
+          set -e
+          DY=$(find tweak/.theos/obj -name "CallGuardTweak.dylib" -type f | head -1)
+          if [ -z "$DY" ]; then
+            echo "::error::找不到编译产物 CallGuardTweak.dylib"
+            find tweak/.theos -type f -name "*.dylib" || true
+            exit 1
+          fi
+          echo "dylib: $DY"
+          ls -lh "$DY"
+          file "$DY"
+
+          ROOT=pkgroot
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/DEBIAN"
+          mkdir -p "$ROOT/var/jb/Library/MobileSubstrate/DynamicLibraries"
+
+          cp "$DY" "$ROOT/var/jb/Library/MobileSubstrate/DynamicLibraries/CallGuardTweak.dylib"
+          cp tweak/CallGuardTweak.plist "$ROOT/var/jb/Library/MobileSubstrate/DynamicLibraries/"
+
+          cp tweak/control "$ROOT/DEBIAN/control"
+          cp tweak/layout/DEBIAN/postinst "$ROOT/DEBIAN/postinst"
+          chmod 755 "$ROOT/DEBIAN/postinst"
+
+          SIZE=$(du -sk "$ROOT" | cut -f1)
+          printf 'Installed-Size: %s\n' "$SIZE" >> "$ROOT/DEBIAN/control"
+
+          dpkg-deb --build --root-owner-group "$ROOT" CallGuardTweak.deb
+          echo "=== 包信息 ==="
+          dpkg-deb -I CallGuardTweak.deb
+          echo "=== 文件列表 ==="
+          dpkg-deb -c CallGuardTweak.deb
 
       - name: 诊断 Tweak 构建错误
         if: always() && steps.tweak.outcome != 'success'
@@ -235,7 +260,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: callguard-tweak
-          path: tweak/packages/*.deb
+          path: CallGuardTweak.deb
           if-no-files-found: warn
 
       - name: Upload logs
