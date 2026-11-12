@@ -109,6 +109,18 @@ jobs:
           mkdir -p Payload
           cp -R "$APP" Payload/
 
+          # 把构建标识写进 Info.plist：装到手机上能一眼看出是哪一版。
+          # 之前桌面包和真机包代际对不上，就是因为包里没有任何版本线索。
+          PB=/usr/libexec/PlistBuddy
+          PLIST=Payload/CallGuard.app/Info.plist
+          $PB -c "Delete :CGBuildCommit" "$PLIST" 2>/dev/null || true
+          $PB -c "Add :CGBuildCommit string ${GITHUB_SHA:0:7}" "$PLIST"
+          $PB -c "Delete :CGBuildTime" "$PLIST" 2>/dev/null || true
+          $PB -c "Add :CGBuildTime string $(date -u +%Y%m%d-%H%M)" "$PLIST"
+          echo "=== 版本标识 ==="
+          $PB -c "Print :CGBuildCommit" "$PLIST"
+          $PB -c "Print :CGBuildTime" "$PLIST"
+
           # 先签 extension 再签主 App。TrollStore 安装时保留这里的 entitlements
           codesign --force --sign - \
             --entitlements app/CallGuardDirectory/CallGuardDirectory.entitlements \
@@ -186,7 +198,9 @@ jobs:
           make clean all \
             THEOS=$HOME/theos \
             THEOS_PACKAGE_SCHEME=rootless \
-            FINALPACKAGE=1 2>&1 | tee /tmp/theos.log | tail -80
+            FINALPACKAGE=1 \
+            CGBUILD_COMMIT="${GITHUB_SHA:0:7}" \
+            CGBUILD_TIME="$(date -u +%Y%m%d-%H%M)" 2>&1 | tee /tmp/theos.log | tail -80
 
       - name: Package .deb
         if: always() && steps.tweak.outcome == 'success'
@@ -283,6 +297,28 @@ jobs:
             echo "::error::构建未全部成功，见上方诊断步骤"
             exit 1
           fi
+
+      # 把产物推到 dist 分支，本机可直接 git fetch 取回。
+      # upload-artifact 下载需要登录，这条路不需要，也不占 artifact 配额。
+      - name: 回传产物到 dist 分支
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/distout
+          cp CallGuard.tipa /tmp/distout/ 2>/dev/null || echo "无 tipa"
+          cp CallGuardTweak.deb /tmp/distout/ 2>/dev/null || echo "无 deb"
+          echo "${GITHUB_SHA}" > /tmp/distout/commit.txt
+          ls -la /tmp/distout
+
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@localhost"
+          git checkout --orphan "dist-${GITHUB_RUN_ID}" || true
+          git rm -rf . >/dev/null 2>&1 || true
+          mkdir -p .dist
+          cp /tmp/distout/* .dist/ 2>/dev/null || true
+          git add -f .dist
+          git commit -m "dist: ${GITHUB_SHA:0:7} [skip ci]" || echo "无变化"
+          git push -f origin HEAD:dist || echo "推送产物失败"
 
       # 把日志推回 ci-logs 分支。artifact 下载需要登录，这条路不需要。
       - name: 回传构建日志

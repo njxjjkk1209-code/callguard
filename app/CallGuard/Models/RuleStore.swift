@@ -241,8 +241,21 @@ final class RuleStore: ObservableObject {
         try blockText.write(to: SharedConfig.blocklistExportURL,
                             atomically: true, encoding: .utf8)
 
+        // label 来自用户输入，可能含 \t / \n / \r。
+        // appex 侧 streamLines 用 \n 分行、\t 切列：含 tab 会把标签截断，
+        // 含换行会让后续所有行错位，升序校验又会把这些行静默丢掉，
+        // 表现就是"标签莫名其妙少了几个"。导出前必须清洗。
+        func sanitizeLabel(_ raw: String) -> String {
+            let cleaned = raw
+                .replacingOccurrences(of: "\t", with: " ")
+                .replacingOccurrences(of: "\n", with: " ")
+                .replacingOccurrences(of: "\r", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+            return cleaned.isEmpty ? "疑似骚扰" : cleaned
+        }
+
         let identifyText = identifyMap.keys.sorted()
-            .map { "\($0)\t\(identifyMap[$0]!)" }
+            .map { "\($0)\t\(sanitizeLabel(identifyMap[$0] ?? ""))" }
             .joined(separator: "\n")
         try identifyText.write(to: SharedConfig.identifyExportURL,
                                atomically: true, encoding: .utf8)
@@ -288,18 +301,63 @@ final class RuleStore: ObservableObject {
                 fromPropertyList: dict, format: .xml, options: 0
             )
 
+            // 两个通道逐个尝试，任一成功即止。
+            // 旧实现把主通道写在 try 里，容器一旦抛错就整个进 catch，
+            // 后面的备通道根本没机会试 —— 容器正常时看不出区别，
+            // 容器异常时就变成"明明备通道可用却报失败"。
+            var wrote = false
+
             // 主通道：App Group 容器。App 写自己的容器是沙盒内行为，必然成功；
             // SpringBoard 越狱后能直接读，不依赖 TrollStore 给不给 no-sandbox。
-            try data.write(to: SharedConfig.tweakConfigInContainerURL, options: .atomic)
+            do {
+                try data.write(to: SharedConfig.tweakConfigInContainerURL, options: .atomic)
+                wrote = true
+            } catch {
+                // 主通道失败不中断，继续试备通道
+            }
 
             // 备通道：/var/mobile/Library 等固定路径。写得进去就多一份，
             // Tweak 优先读容器，读不到再退到这里。
-            if SharedConfig.isTweakChannelReachable {
-                try? data.write(to: SharedConfig.tweakConfigURL, options: .atomic)
+            if SharedConfig.isTweakChannelReachable,
+               (try? data.write(to: SharedConfig.tweakConfigURL, options: .atomic)) != nil {
+                wrote = true
+            }
+
+            if !wrote {
+                lastReloadMessage = "Tweak 配置写入失败：容器与固定路径均不可写"
             }
         } catch {
-            lastReloadMessage = "Tweak 配置写入失败：\(error.localizedDescription)"
+            lastReloadMessage = "Tweak 配置序列化失败：\(error.localizedDescription)"
         }
+    }
+
+    /// 日志文件超过 512KB 时裁掉旧内容，只保留尾部 256KB 的完整行。
+    ///
+    /// 观察期一周不至于触发，但按月跑会无限增长；App 每次启动全量读进内存，
+    /// 几十 MB 的 JSONL 会直接卡住主线程。
+    private func trimLogIfNeeded(_ url: URL) {
+        let maxBytes  = 512 * 1024
+        let keepBytes = 256 * 1024
+
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? Int, size > maxBytes else { return }
+
+        guard let reader = try? FileHandle(forReadingFrom: url) else { return }
+        defer { try? reader.close() }
+
+        try? reader.seek(toOffset: UInt64(size - keepBytes))
+        guard let tail = try? reader.readToEnd(),
+              let text = String(data: tail, encoding: .utf8) else { return }
+
+        // 首行大概率是被切断的半条 JSON，丢掉，只保留完整行
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+        if !lines.isEmpty { lines.removeFirst() }
+
+        let body = lines.joined(separator: "\n") + "\n"
+        guard let writer = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? writer.close() }
+        try? writer.truncate(atOffset: 0)
+        try? writer.write(contentsOf: Data(body.utf8))
     }
 
     /// 把 Tweak 写的 JSONL 日志导入数据库，然后清空文件。
@@ -312,8 +370,13 @@ final class RuleStore: ObservableObject {
         ]
         guard let url = candidates.first(where: {
             FileManager.default.fileExists(atPath: $0.path)
-        }),
-        let data = try? Data(contentsOf: url), !data.isEmpty else { return }
+        }) else { return }
+
+        // 长期不打开 App 时日志会无限增长，全量读进内存会卡。
+        // 超过 512KB 先裁掉旧内容，只保留尾部 256KB 的完整行。
+        trimLogIfNeeded(url)
+
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return }
 
         var imported = 0
         for line in data.split(separator: 0x0A) {
@@ -345,8 +408,16 @@ final class RuleStore: ObservableObject {
             }
         }
 
-        // 已导入的清掉，避免重复计数
-        try? "".write(to: url, atomically: true, encoding: .utf8)
+        // 已导入的清掉，避免重复计数。
+        //
+        // 不用 `"".write(atomically: true)` —— 那是"写临时文件 + rename"，
+        // rename 之后 inode 就换了。Tweak 侧此刻如果还持有旧 inode 的 fd，
+        // 会继续往孤儿文件里写，刚产生的那条日志就丢了。
+        // 原地 truncate 不换 inode，Tweak 下次 seekToEndOfFile 拿到的就是新长度。
+        if let fh = try? FileHandle(forWritingTo: url) {
+            try? fh.truncate(atOffset: 0)
+            try? fh.close()
+        }
 
         if imported > 0 {
             refreshLogs()

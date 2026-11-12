@@ -17,6 +17,40 @@ struct SettingsView: View {
     @State private var exportDocument: RulesDocument?
     @State private var showingExporter = false
 
+    /// hook 自检结果（来自 Tweak 心跳）。
+    /// Logos 在"类存在但方法不存在"时静默失效，不报错也不崩溃，
+    /// 所以必须把实际挂载数显示出来，否则「L1 绿点但什么都不发生」无从排查。
+    @State private var hookSummary = "—"
+
+    /// CallDirectory 两个导出文件的实际条目数。
+    /// 系统设置里显示扩展已启用、但文件是 0 字节时，来电不会有任何标签，
+    /// 也不会有任何报错 —— 不显示这个数字就完全看不出来。
+    @State private var entrySummary = "—"
+    @State private var entriesEmpty = false
+
+    private func refreshDiagnostics() {
+        if let info = SharedConfig.tweakReadyInfo {
+            let hooked = (info["hooked"] as? NSNumber)?.intValue ?? -1
+            let total  = (info["hookTotal"] as? NSNumber)?.intValue ?? 0
+            let commit = info["commit"] as? String ?? ""
+
+            if hooked >= 0 && total > 0 {
+                hookSummary = "\(hooked)/\(total)"
+            } else {
+                hookSummary = "旧版 Tweak（无自检）"
+            }
+            if !commit.isEmpty && commit != "dev" {
+                hookSummary += " · \(commit)"
+            }
+        } else {
+            hookSummary = "Tweak 未加载"
+        }
+
+        let counts = SharedConfig.callDirectoryEntryCounts
+        entriesEmpty = (counts.block == 0 && counts.identify == 0)
+        entrySummary = "拦截 \(counts.block) / 识别 \(counts.identify)"
+    }
+
     /// Tweak 通道状态。
     /// 主通道是 App Group 容器（App 一定写得进，SpringBoard 一定读得到），
     /// 固定路径是备通道。区分两者才能判断到底哪一环出了问题。
@@ -141,13 +175,17 @@ struct SettingsView: View {
                             value: SharedConfig.isAppGroupAvailable ? "App Group" : "本地目录")
                     InfoRow(title: "Tweak 通道", value: tweakChannelStatus)
                     InfoRow(title: "通道路径", value: tweakChannelPath)
+                    InfoRow(title: "Hook 自检", value: hookSummary)
                     InfoRow(title: "规则数", value: "\(store.rules.count)")
                     InfoRow(title: "生效规则", value: "\(store.engineRuleCount)")
+                    InfoRow(title: "CallDirectory 条目", value: entrySummary)
                 } header: {
                     Text("运行状态")
                 } footer: {
                     if tweakChannelStatus == "未导出" {
                         Text(SharedConfig.tweakChannelDiagnostics)
+                    } else if entriesEmpty {
+                        Text("来电识别是空转的：导出文件 0 条，来电不会有任何标签。只有「精确号码」类型的规则才会导出到 CallDirectory，号段规则只由越狱 Tweak 处理。")
                     }
                 }
 
@@ -175,6 +213,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+            .onAppear { refreshDiagnostics() }
             .sheet(isPresented: $showingGuide) { GuideView() }
             .sheet(isPresented: $showingImport) {
                 ImportView().environmentObject(store)

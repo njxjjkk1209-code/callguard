@@ -82,7 +82,7 @@ struct AddRuleView: View {
         switch action {
         case .allow:   return "放行：优先级最高，可用来给某个号段开白名单"
         case .mark:    return "仅标记：来电显示标签，不拦截。新号段建议先用这个跑一周"
-        case .silence: return "静音：不响铃，但对方仍能打通（会出现在未接里）"
+        case .silence: return "静音：不响铃，但对方仍能打通（会出现在未接里）。通话结束后铃声自动恢复；若读不到当前音量则跳过静音，不会把铃声永久打成 0"
         case .block:   return "拦截：静音并挂断。号段规则慎用，容易误伤"
         }
     }

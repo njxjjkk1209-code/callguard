@@ -128,11 +128,28 @@ static NSLock                         *gHandledLock = nil;
 
 // ─────────────────────────── 心跳 ───────────────────────────
 
+// 由 CI 注入（-DCGBUILD_COMMIT=...），本地手编时回落到 dev。
+#ifndef CGBUILD_COMMIT
+#define CGBUILD_COMMIT "dev"
+#endif
+#ifndef CGBUILD_TIME
+#define CGBUILD_TIME "unknown"
+#endif
+
+// hook 自检结果，由 CGProbeHooks() 填充，写进心跳供 App 展示。
+static int gHookedCount = 0;
+static int gHookedTotal = 0;
+
 /// 写心跳文件，让 App 知道 Tweak 已经在 SpringBoard 里跑起来了。
 ///
 /// 放在 App Group 容器里，App 直接读，不需要任何额外权限。
 /// 这比"配置文件存在"可靠得多 —— 配置存在只能说明 App 导出成功，
-/// 跟 Tweak 有没有被加载完全是两件事。
+/// 跟 Tweak 有没有被 SpringBoard 加载完全是两件事。
+///
+/// hooked/hookTotal 的意义：
+/// Logos 的 %hook 遇到"类存在但方法不存在"时**不报错、不崩溃、静默失效**。
+/// 只靠 L1 绿点会骗人（Tweak 加载了，但一条 hook 都没挂上）。
+/// 把实际挂载数写出来，App 才能显示「已运行 · 挂载 1/2 hook」并飘红。
 static void CGWriteReadyMarker(size_t ruleCount) {
     CGResolveDirectory();
     if (!gLogPath) return;
@@ -142,9 +159,13 @@ static void CGWriteReadyMarker(size_t ruleCount) {
 
     NSDictionary *info = @{
         @"version":    @"1.0.0",
+        @"commit":     @CGBUILD_COMMIT,
+        @"buildTime":  @CGBUILD_TIME,
         @"startedAt":  @([[NSDate date] timeIntervalSince1970]),
         @"pid":        @(getpid()),
         @"ruleCount":  @(ruleCount),
+        @"hooked":     @(gHookedCount),
+        @"hookTotal":  @(gHookedTotal),
         @"configPath": gConfigPath ?: @"",
     };
     NSData *d = [NSJSONSerialization dataWithJSONObject:info options:0 error:NULL];
@@ -354,37 +375,167 @@ static void CGHangUp(id call) {
 }
 
 // ─────────────────────────── 静音 ───────────────────────────
+//
+// 【安全约束】静音必须可恢复。
+//
+// 旧实现直接把 Ringtone 音量写 0 就不管了 —— 用户只要命中一次 silence 规则，
+// 之后**所有正常来电都不响**，而且 App 里没有恢复入口，只能去系统设置手动拉音量条。
+// 这属于不可逆的实际损害，比"没有静音功能"糟糕得多。
+//
+// 现在的契约：
+//   1. 先读当前 Ringtone 音量并存档；
+//   2. 读不到（签名不符 / 返回异常）→ **不静音**，只记日志。宁可不禁音，也不毁铃声；
+//   3. 通话结束（TUCallCenter 无 incomingCall 且无 currentCall）时写回存档值；
+//   4. 每次处理新来电前做一次遗留检查，防止通知漏收导致音量卡在 0。
 
-static void CGSilenceRing(void) {
+static float gSavedRingVolume = -1.0f;   // < 0 表示没有待恢复的存档
+static NSLock *gRingVolumeLock = nil;
+
+static id CGSharedAVSystemController(void) {
     Class cls = NSClassFromString(@"AVSystemController");
-    if (!cls || ![cls respondsToSelector:@selector(sharedAVSystemController)]) {
-        NSLog(@"[CallGuard] 静音失败：AVSystemController 不可用");
-        return;
+    if (!cls || ![cls respondsToSelector:@selector(sharedAVSystemController)]) return nil;
+    return [cls performSelector:@selector(sharedAVSystemController)];
+}
+
+/// 读当前 Ringtone 音量。成功返回 YES 并写入 out。
+///
+/// 私有方法 `- (BOOL)getVolume:(float *)arg1 forCategory:(NSString *)arg2`
+/// 的签名在不同系统版本上不统一（有的返回 BOOL，有的直接返回 float），
+/// 所以这里按 methodReturnType 分支处理，并对结果做 0~1 合法性校验。
+/// 校验不过就当作读取失败 —— 拿垃圾值去"恢复"比不恢复更糟。
+static BOOL CGReadRingVolume(float *out) {
+    id ctrl = CGSharedAVSystemController();
+    if (!ctrl) return NO;
+
+    SEL sel = @selector(getVolume:forCategory:);
+    if (![ctrl respondsToSelector:sel]) return NO;
+
+    NSMethodSignature *sig = [ctrl methodSignatureForSelector:sel];
+    if (!sig || sig.numberOfArguments < 4) return NO;
+
+    float buf = 0.0f;
+    float *bufPtr = &buf;
+    NSString *category = @"Ringtone";
+
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    [inv setTarget:ctrl];
+    [inv setSelector:sel];
+    [inv setArgument:&bufPtr atIndex:2];    // float* 输出参数：传指针的地址
+    [inv setArgument:&category atIndex:3];
+
+    @try {
+        [inv invoke];
+    } @catch (NSException *e) {
+        NSLog(@"[CallGuard] 读铃声音量失败: %@", e.reason);
+        return NO;
     }
 
-    id ctrl = [cls performSelector:@selector(sharedAVSystemController)];
-    SEL sel = @selector(setVolumeTo:forCategory:);
-    NSMethodSignature *sig = [ctrl methodSignatureForSelector:sel];
-    if (!sig) {
-        NSLog(@"[CallGuard] 静音失败：setVolumeTo:forCategory: 不存在");
-        return;
+    const char *rt = sig.methodReturnType;
+    if (rt && (rt[0] == 'f' || rt[0] == 'd')) {
+        // 直接返回 float 的变体
+        float ret = 0.0f;
+        [inv getReturnValue:&ret];
+        if (ret > 0.001f && ret <= 1.0f) { *out = ret; return YES; }
+    } else {
+        // 返回 BOOL、音量走输出参数的变体
+        BOOL ok = NO;
+        [inv getReturnValue:&ok];
+        if (ok && buf >= 0.0f && buf <= 1.0f) { *out = buf; return YES; }
     }
+
+    // 兜底：输出参数有效就用它（有些版本返回值恒为 NO 但参数填对了）
+    if (buf > 0.001f && buf <= 1.0f) { *out = buf; return YES; }
+    return NO;
+}
+
+static BOOL CGSetRingVolume(float volume) {
+    id ctrl = CGSharedAVSystemController();
+    if (!ctrl) return NO;
+
+    SEL sel = @selector(setVolumeTo:forCategory:);
+    if (![ctrl respondsToSelector:sel]) return NO;
+
+    NSMethodSignature *sig = [ctrl methodSignatureForSelector:sel];
+    if (!sig || sig.numberOfArguments < 4) return NO;
 
     NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
     [inv setTarget:ctrl];
     [inv setSelector:sel];
 
-    float volume = 0.0f;
-    [inv setArgument:&volume atIndex:2];
-
-    id category = @"Ringtone";
+    float v = volume;
+    [inv setArgument:&v atIndex:2];
+    NSString *category = @"Ringtone";
     [inv setArgument:&category atIndex:3];
 
     @try {
         [inv invoke];
-        NSLog(@"[CallGuard] 已静音");
+        return YES;
     } @catch (NSException *e) {
-        NSLog(@"[CallGuard] 静音失败: %@", e.reason);
+        NSLog(@"[CallGuard] 写铃声音量失败: %@", e.reason);
+        return NO;
+    }
+}
+
+/// 当前是否还有活跃通话（来电响铃中或通话中）。
+/// 两者都没有才允许恢复铃声音量。
+static BOOL CGHasActiveCall(void) {
+    Class cls = NSClassFromString(@"TUCallCenter");
+    if (!cls || ![cls respondsToSelector:@selector(sharedInstance)]) return NO;
+
+    id center = [cls performSelector:@selector(sharedInstance)];
+    if (!center) return NO;
+
+    for (NSString *key in @[@"incomingCall", @"currentCall", @"frontmostCall"]) {
+        id v = nil;
+        @try { v = [center valueForKey:key]; } @catch (NSException *e) { continue; }
+        if (v && v != [NSNull null]) return YES;
+    }
+    return NO;
+}
+
+/// 恢复存档的铃声音量。可重复调用，没有存档时是空操作。
+static void CGRestoreRingVolume(void) {
+    if (!gRingVolumeLock) gRingVolumeLock = [NSLock new];
+    [gRingVolumeLock lock];
+    float saved = gSavedRingVolume;
+    gSavedRingVolume = -1.0f;
+    [gRingVolumeLock unlock];
+
+    if (saved < 0) return;
+
+    if (CGSetRingVolume(saved)) {
+        NSLog(@"[CallGuard] 铃声已恢复至 %.2f", saved);
+    } else {
+        NSLog(@"[CallGuard] 铃声恢复失败，原值 %.2f", saved);
+    }
+}
+
+/// 存档 + 静音。存档失败则整个动作放弃。
+static void CGSilenceRingSafely(void) {
+    if (!gRingVolumeLock) gRingVolumeLock = [NSLock new];
+
+    // 已经有存档（连续来电）就不要覆盖，否则会把 0 存成"原值"
+    [gRingVolumeLock lock];
+    BOOL alreadySaved = (gSavedRingVolume >= 0);
+    [gRingVolumeLock unlock];
+
+    if (!alreadySaved) {
+        float current = 0.0f;
+        if (!CGReadRingVolume(&current)) {
+            NSLog(@"[CallGuard] 静音已跳过：读不到当前铃声音量，为避免永久静音不执行");
+            return;
+        }
+        [gRingVolumeLock lock];
+        gSavedRingVolume = current;
+        [gRingVolumeLock unlock];
+        NSLog(@"[CallGuard] 铃声音量已存档 %.2f", current);
+    }
+
+    if (CGSetRingVolume(0.0f)) {
+        NSLog(@"[CallGuard] 已静音");
+    } else {
+        NSLog(@"[CallGuard] 静音失败：写音量被拒");
+        CGRestoreRingVolume();   // 没静成功，存档没有意义，清掉
     }
 }
 
@@ -434,6 +585,12 @@ static void CGHandleCall(id call) {
     @autoreleasepool {
         if (!gEnabled || !call) return;
 
+        // 遗留检查：上一次静音后如果通知漏收，音量会卡在 0。
+        // 这里在每次新来电时兜底恢复一次（此刻确实没有活跃通话才恢复）。
+        if (gSavedRingVolume >= 0 && !CGHasActiveCall()) {
+            CGRestoreRingVolume();
+        }
+
         NSString *number = CGNumberFromCall(call);
         if (!number.length) return;
 
@@ -468,7 +625,7 @@ static void CGHandleCall(id call) {
                 CGWriteLog(number, r);
                 break;
             case cg::Action::Silence:
-                CGSilenceRing();
+                CGSilenceRingSafely();
                 CGWriteLog(number, r);
                 break;
             case cg::Action::Block:
@@ -515,11 +672,34 @@ static void CGHandleCall(id call) {
 
 // ─────────────────────────── 初始化 ───────────────────────────
 
+/// 自检：这两个 hook 到底挂上了几个。
+///
+/// class_getInstanceMethod 返回非 nil 才说明方法真实存在、%orig 链能走通。
+/// 返回 nil = 类里压根没有这个方法 = Logos 静默失效（不崩、不报错、不生效）。
+/// 只检查"类是否存在"是不够的 —— 方法缺失比类缺失常见得多。
+static void CGProbeHooks(void) {
+    int total = 0, ok = 0;
+
+    total++;
+    Class a = NSClassFromString(@"SBDashBoardIncomingCallViewController");
+    if (a && class_getInstanceMethod(a, @selector(initWithCall:))) ok++;
+
+    total++;
+    Class b = NSClassFromString(@"SBIncomingCallAlertItem");
+    if (b && class_getInstanceMethod(b, @selector(initWithCall:))) ok++;
+
+    gHookedCount = ok;
+    gHookedTotal = total;
+    NSLog(@"[CallGuard] hook 自检：%d/%d 挂载", ok, total);
+}
+
 %ctor {
     @autoreleasepool {
-        gHandledLock = [NSLock new];
-        gHandled     = [NSMutableSet new];
+        gHandledLock    = [NSLock new];
+        gHandled        = [NSMutableSet new];
+        gRingVolumeLock = [NSLock new];
 
+        CGProbeHooks();
         CGLoadConfig(YES);
 
         size_t count = 0;
@@ -533,6 +713,30 @@ static void CGHandleCall(id call) {
         // 跟 Tweak 有没有被 SpringBoard 加载是两件事。
         CGWriteReadyMarker(count);
 
-        NSLog(@"[CallGuard] Tweak 已加载，规则 %zu 条，enabled=%d", count, gEnabled);
+        // SpringBoard 早期 App Group 容器可能还没挂载完，CGAppGroupDir() 会返回 nil，
+        // 心跳就落到固定路径 → App 读不到 → L1 假灰点。2 秒后重写一次兜底。
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                       dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            size_t c = 0;
+            {
+                std::lock_guard<std::mutex> lock(gEngineLock);
+                if (gEngine) c = gEngine->ruleCount();
+            }
+            CGWriteReadyMarker(c);
+        });
+
+        // 通话结束恢复铃声。
+        // 必须挂通话状态，不能用界面消失 —— 界面消失 ≠ 通话结束，会误恢复。
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:@"TUCallCenterCallStatusChangedNotification"
+                        object:nil
+                         queue:nil
+                    usingBlock:^(NSNotification *note) {
+            if (gSavedRingVolume < 0) return;
+            if (!CGHasActiveCall()) CGRestoreRingVolume();
+        }];
+
+        NSLog(@"[CallGuard] Tweak 已加载，规则 %zu 条，enabled=%d，hook %d/%d",
+              count, gEnabled, gHookedCount, gHookedTotal);
     }
 }

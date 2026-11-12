@@ -1,7 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
   "updated": "2026-11-12",
-  "note": "种子规则库。默认全部为 mark（仅标记不拦截），先跑观察期，确认误拦率后再升级为 block。",
+  "note": "种子规则库。默认全部为 mark（仅标记不拦截），先跑观察期，确认误拦率后再升级为 block。注意：CallDirectory（L2 来电识别）只支持 exact 精确号码，prefix 号段规则只由越狱 Tweak（L1）处理 —— 所以这里必须保留至少 3 条 exact，否则 L2 导出文件是 0 字节，来电永远不会出现标签。",
   "rules": [
     {
       "id": 1001,
@@ -58,6 +58,27 @@
       "value": "1010",
       "action": "mark",
       "label": "1010 企业外呼"
+    },
+    {
+      "id": 1101,
+      "type": "exact",
+      "value": "13800000001",
+      "action": "mark",
+      "label": "L2 测试号-请替换"
+    },
+    {
+      "id": 1102,
+      "type": "exact",
+      "value": "13800000002",
+      "action": "mark",
+      "label": "L2 测试号-请替换"
+    },
+    {
+      "id": 1103,
+      "type": "exact",
+      "value": "13800000003",
+      "action": "mark",
+      "label": "L2 测试号-请替换"
     }
   ],
   "whitelist_templates": [

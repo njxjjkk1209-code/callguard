@@ -11,8 +11,16 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = CallGuardTweak
 
+# 构建标识：CI 通过命令行传入，本地手编回落到 dev。
+# 这两个值会写进 tweak_ready.json，App 概览页显示 build xxx，
+# 用来判断手机上跑的和手上拿的是不是同一代产物。
+CGBUILD_COMMIT ?= dev
+CGBUILD_TIME ?= unknown
+
 CallGuardTweak_FILES = Tweak.xm
-CallGuardTweak_CFLAGS = -fobjc-arc -std=c++17 -I$(THEOS_PROJECT_DIR)/../core
+CallGuardTweak_CFLAGS = -fobjc-arc -std=c++17 -I$(THEOS_PROJECT_DIR)/../core \
+	-DCGBUILD_COMMIT='\"$(CGBUILD_COMMIT)\"' \
+	-DCGBUILD_TIME='\"$(CGBUILD_TIME)\"'
 CallGuardTweak_FRAMEWORKS = UIKit Foundation AVFoundation
 CallGuardTweak_LIBRARIES = substrate
 

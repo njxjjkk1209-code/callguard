@@ -17,16 +17,68 @@ struct HomeView: View {
     @State private var tweakRunning = false
     @State private var tweakDetail = "实时拦截号段 / 正则，需在 Sileo 安装 CallGuard Tweak"
 
+    /// hook 自检结果。-1 表示旧版心跳没有这个字段（未知）。
+    @State private var tweakHooked = -1
+    @State private var tweakHookTotal = 0
+
+    /// CallDirectory 两个导出文件的实际条目数。
+    /// 「L2 已启用」和「L2 真的有条目」是两件事，必须分开显示。
+    @State private var blockEntries = 0
+    @State private var identifyEntries = 0
+
     private func refreshTweakState() {
         guard let info = SharedConfig.tweakReadyInfo else {
             tweakRunning = false
+            tweakHooked = -1
+            tweakHookTotal = 0
             tweakDetail = "实时拦截号段 / 正则，需在 Sileo 安装 CallGuard Tweak"
             return
         }
         tweakRunning = true
         let version = info["version"] as? String ?? "?"
-        let rules = (info["ruleCount"] as? NSNumber)?.intValue ?? 0
-        tweakDetail = "已运行 · v\(version) · 加载 \(rules) 条规则"
+        let rules   = (info["ruleCount"] as? NSNumber)?.intValue ?? 0
+        let hooked  = (info["hooked"] as? NSNumber)?.intValue ?? -1
+        let total   = (info["hookTotal"] as? NSNumber)?.intValue ?? 0
+        let commit  = info["commit"] as? String ?? ""
+
+        tweakHooked    = hooked
+        tweakHookTotal = total
+
+        var parts: [String] = ["已运行", "v\(version)"]
+        if hooked >= 0 && total > 0 {
+            parts.append("挂载 \(hooked)/\(total) hook")
+        }
+        parts.append("加载 \(rules) 条规则")
+        if !commit.isEmpty && commit != "dev" {
+            parts.append("build \(commit)")
+        }
+        tweakDetail = parts.joined(separator: " · ")
+    }
+
+    /// Tweak 加载了但一条 hook 都没挂上 —— 这时 L1 不能显示绿点，
+    /// 否则"绿点 + 什么都不发生"会让人以为拦截在正常工作。
+    private var tweakState: StatusRow.State {
+        guard tweakRunning else { return .unknown }
+        if tweakHookTotal > 0 && tweakHooked == 0 { return .warn }
+        return .ok
+    }
+
+    private func refreshDirectoryEntries() {
+        let counts = SharedConfig.callDirectoryEntryCounts
+        blockEntries    = counts.block
+        identifyEntries = counts.identify
+    }
+
+    private var entryDetail: String {
+        if blockEntries == 0 && identifyEntries == 0 {
+            return "拦截 0 / 识别 0 —— 空转中，来电不会有任何标签"
+        }
+        return "拦截 \(blockEntries) / 识别 \(identifyEntries)"
+    }
+
+    private var entryState: StatusRow.State {
+        if blockEntries == 0 && identifyEntries == 0 { return .warn }
+        return .ok
     }
 
     var body: some View {
@@ -58,7 +110,7 @@ struct HomeView: View {
                         StatusRow(
                             title: "L1 越狱 Tweak",
                             detail: tweakDetail,
-                            state: tweakRunning ? .ok : .unknown
+                            state: tweakState
                         )
 
                         Divider().padding(.leading, 16)
@@ -73,9 +125,18 @@ struct HomeView: View {
                                     DispatchQueue.main.async {
                                         directoryStatus = result
                                         checking = false
+                                        refreshDirectoryEntries()
                                     }
                                 }
                             }
+                        )
+
+                        Divider().padding(.leading, 16)
+
+                        StatusRow(
+                            title: "L2 条目数",
+                            detail: entryDetail,
+                            state: entryState
                         )
 
                         Divider().padding(.leading, 16)
@@ -106,6 +167,20 @@ struct HomeView: View {
             .onAppear {
                 store.refreshLogs()
                 refreshTweakState()
+                refreshDirectoryEntries()
+
+                // L2 状态不再等用户手点。不查就永远显示「点击查询」灰点，
+                // 用户根本不会想到去点它。
+                if directoryStatus == "点击查询" && !checking {
+                    checking = true
+                    store.directoryStatus { result in
+                        DispatchQueue.main.async {
+                            directoryStatus = result
+                            checking = false
+                            refreshDirectoryEntries()
+                        }
+                    }
+                }
             }
         }
     }

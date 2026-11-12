@@ -94,6 +94,28 @@ enum SharedConfig {
         return dict
     }
 
+    // MARK: - CallDirectory 可观测性
+    //
+    // 「L2 已启用」和「L2 真的有条目」是两件事。
+    // 系统设置里显示扩展已启用，但导出文件是 0 字节时，来电不会有任何标签，
+    // 而且不会有任何报错 —— 用户只会以为"功能坏了"。
+    // 所以必须把两个导出文件的实际行数暴露到 UI 上。
+
+    /// CallDirectory 两个导出文件的实际条目数（行数）。
+    static var callDirectoryEntryCounts: (block: Int, identify: Int) {
+        func lineCount(_ url: URL) -> Int {
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { return 0 }
+            return text.split(separator: "\n", omittingEmptySubsequences: true).count
+        }
+        return (lineCount(blocklistExportURL), lineCount(identifyExportURL))
+    }
+
+    /// 两个导出文件是否都为空 —— 为空时 L2 是空转状态，需要在 UI 上明确提示。
+    static var isCallDirectoryEmpty: Bool {
+        let c = callDirectoryEntryCounts
+        return c.block == 0 && c.identify == 0
+    }
+
     // MARK: - 与越狱 Tweak 的共享通道
     //
     // SpringBoard 进程读不到 App 沙盒，也拿不到 App Group 容器，只能走固定路径。
