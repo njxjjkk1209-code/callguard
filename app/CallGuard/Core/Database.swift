@@ -237,8 +237,11 @@ final class Database {
         guard !ids.isEmpty else { return 0 }
         let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
         let sql = "UPDATE rules SET action = ? WHERE id IN (\(placeholders)) AND action = ?;"
+
         var binds: [Any?] = [RuleAction.block.rawValue]
-        binds.append(contentsOf: ids.map { Optional($0) })
+        for id in ids {
+            binds.append(id)
+        }
         binds.append(RuleAction.mark.rawValue)
 
         try run(sql, binds)
